@@ -353,8 +353,32 @@ fn parse_period(input: &str) -> LedgerParseResult<Period> {
         every_n_parser("weeks", Period::EveryNWeeks),
         every_n_parser("months", Period::EveryNMonths),
         every_n_parser("years", Period::EveryNYears),
+        every_n_parser_f(alt((tag("year"), tag("years"))), Period::EveryNYears),
         map(parse_date, Period::Date),
     ))(input)
+}
+
+fn every_n_parser_f<'a, P, F>(
+    period_str: P,
+    variant: F,
+) -> impl Fn(&'a str) -> LedgerParseResult<Period>
+where
+    P: FnMut(&'a str) -> LedgerParseResult<&'a str>,
+    F: Fn(u32) -> Period,
+{
+    move |input| {
+        let (input, (_, _, interval, _, _)) = tuple((
+            tag("every"),
+            space1,
+            opt(map_res(digit0, |s: &str| s.parse::<u32>())),
+            // map_res(recognize(pair(opt(tag("-")), space1)), str::parse),
+            opt(space1),
+            period_str,
+        ))(input)?;
+
+        let interval = interval.unwrap_or(1);
+        Ok((input, variant(interval)))
+    }
 }
 
 fn every_n_parser<'a, F>(
@@ -1088,10 +1112,7 @@ mod tests {
         assert_eq!(parse_period("weekly"), Ok(("", Period::Weekly)));
         assert_eq!(parse_period("monthly"), Ok(("", Period::Monthly)));
         assert_eq!(parse_period("yearly"), Ok(("", Period::Yearly)));
-        assert_eq!(
-            parse_period("every days"),
-            Ok(("", Period::EveryNDays(1)))
-        );
+        assert_eq!(parse_period("every days"), Ok(("", Period::EveryNDays(1))));
         assert_eq!(
             parse_period("every 3 days"),
             Ok(("", Period::EveryNDays(3)))
