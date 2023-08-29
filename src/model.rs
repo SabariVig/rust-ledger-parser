@@ -30,6 +30,7 @@ pub enum LedgerItem {
     Transaction(Transaction),
     CommodityPrice(CommodityPrice),
     Include(String),
+    PeriodicTransaction(PeriodicTransaction),
 }
 
 impl fmt::Display for LedgerItem {
@@ -41,6 +42,28 @@ impl fmt::Display for LedgerItem {
         )?;
         Ok(())
     }
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum Period {
+    Daily,
+    Weekly,
+    Monthly,
+    Yearly,
+    Date(NaiveDate),
+    EveryNDays(u32),
+    EveryNWeeks(u32),
+    EveryNMonths(u32),
+    EveryNYears(u32),
+}
+
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct PeriodicTransaction {
+    pub period: Period,
+    pub comment: Option<String>,
+    pub start_date: Option<NaiveDate>,
+    pub end_date: Option<NaiveDate>,
+    pub postings: Vec<Posting>,
 }
 
 ///

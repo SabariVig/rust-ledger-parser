@@ -3,7 +3,7 @@ use nom::{
     branch::alt,
     bytes::complete::{is_not, tag, take_while1, take_while_m_n},
     character::complete::{char, digit0, digit1, line_ending, not_line_ending, space0, space1},
-    combinator::{eof, map_opt, map_res, opt, peek, recognize, value, verify},
+    combinator::{eof, map, map_opt, map_res, opt, peek, recognize, value, verify},
     error::VerboseError,
     multi::{fold_many1, many0, many1},
     sequence::{delimited, pair, preceded, separated_pair, terminated, tuple},
@@ -343,6 +343,70 @@ fn parse_payee(input: &str) -> LedgerParseResult<&str> {
     ))(input)
 }
 
+fn parse_period(input: &str) -> LedgerParseResult<Period> {
+    alt((
+        value(Period::Daily, tag("daily")),
+        value(Period::Weekly, tag("weekly")),
+        value(Period::Monthly, tag("monthly")),
+        value(Period::Yearly, tag("yearly")),
+        every_n_parser("days", Period::EveryNDays),
+        every_n_parser("weeks", Period::EveryNWeeks),
+        every_n_parser("months", Period::EveryNMonths),
+        every_n_parser("years", Period::EveryNYears),
+        map(parse_date, Period::Date),
+    ))(input)
+}
+
+fn every_n_parser<'a, F>(
+    period_str: &'static str,
+    variant: F,
+) -> impl Fn(&'a str) -> LedgerParseResult<Period>
+where
+    F: Fn(u32) -> Period,
+{
+    move |input| {
+        let (input, (_, _, interval, _, _)) = tuple((
+            tag("every"),
+            space1,
+            opt(map_res(digit0, |s: &str| s.parse::<u32>())),
+            // map_res(recognize(pair(opt(tag("-")), space1)), str::parse),
+            opt(space1),
+            tag(period_str),
+        ))(input)?;
+
+        let interval = interval.unwrap_or(1);
+        Ok((input, variant(interval)))
+    }
+}
+
+fn parse_periodic_transaction(input: &str) -> LedgerParseResult<PeriodicTransaction> {
+    let (input, _) = tag("~")(input)?;
+    let (input, _) = space1(input)?;
+    let (input, period) = parse_period(input)?;
+    let (input, _) = opt(space1)(input)?;
+    let (input, _from) = opt(tag("from"))(input)?;
+    let (input, _) = opt(space1)(input)?;
+    let (input, start_date) = opt(parse_date)(input)?;
+    let (input, _to) = opt(preceded(space1, tag("to")))(input)?;
+    let (input, end_date) = opt(preceded(space1, parse_date))(input)?;
+    let (input, _) = space0(input)?;
+    let (input, inline_comment) =
+        alt((parse_inline_comment.map(Some), value(None, eol_or_eof)))(input)?;
+    let (input, line_comments) = many0(parse_line_comment)(input)?;
+    let (input, postings) = many1(parse_posting)(input)?;
+
+    Ok((
+        input,
+        PeriodicTransaction {
+            comment: join_comments(inline_comment, line_comments),
+            postings,
+            period,
+            start_date,
+            end_date,
+        },
+    ))
+}
+
 fn parse_transaction(input: &str) -> LedgerParseResult<Transaction> {
     let (input, date) = parse_date(input)?;
     let (input, effective_date) = opt(preceded(tag("="), parse_date))(input)?;
@@ -380,6 +444,7 @@ fn parse_ledger_item(input: &str) -> LedgerParseResult<LedgerItem> {
             .map(LedgerItem::LineComment),
         parse_transaction.map(LedgerItem::Transaction),
         parse_commodity_price.map(LedgerItem::CommodityPrice),
+        parse_periodic_transaction.map(LedgerItem::PeriodicTransaction),
         parse_include_file
             .map(str::to_owned)
             .map(LedgerItem::Include),
@@ -1015,6 +1080,264 @@ mod tests {
                 }
             ))
         );
+    }
+
+    #[test]
+    fn pares_period_test() {
+        assert_eq!(parse_period("daily"), Ok(("", Period::Daily)));
+        assert_eq!(parse_period("weekly"), Ok(("", Period::Weekly)));
+        assert_eq!(parse_period("monthly"), Ok(("", Period::Monthly)));
+        assert_eq!(parse_period("yearly"), Ok(("", Period::Yearly)));
+        assert_eq!(
+            parse_period("every days"),
+            Ok(("", Period::EveryNDays(1)))
+        );
+        assert_eq!(
+            parse_period("every 3 days"),
+            Ok(("", Period::EveryNDays(3)))
+        );
+        assert_eq!(
+            parse_period("every 12 weeks"),
+            Ok(("", Period::EveryNWeeks(12)))
+        );
+        assert_eq!(
+            parse_period("every 23 months"),
+            Ok(("", Period::EveryNMonths(23)))
+        );
+        assert_eq!(
+            parse_period("every 2 years"),
+            Ok(("", Period::EveryNYears(2)))
+        );
+        assert_eq!(
+            parse_period("2023-01-01"),
+            Ok(("", Period::Date(NaiveDate::from_ymd(2023, 01, 01))))
+        )
+    }
+
+    #[test]
+    fn parse_periodic_transactions_test() {
+        assert_eq!(
+            parse_periodic_transaction(
+                r#"~ monthly 
+ TEST:ABC 123  $1.20 ; Posting comment
+                     ; over two lines
+ TEST:ABC 123  $1.20"#
+            ),
+            Ok((
+                "",
+                PeriodicTransaction {
+                    period: Period::Monthly,
+                    comment: None,
+                    start_date: None,
+                    end_date: None,
+                    postings: vec![
+                        Posting {
+                            account: "TEST:ABC 123".to_owned(),
+                            reality: Reality::Real,
+                            amount: Some(PostingAmount {
+                                amount: Amount {
+                                    quantity: Decimal::new(120, 2),
+                                    commodity: Commodity {
+                                        name: "$".to_owned(),
+                                        position: CommodityPosition::Left
+                                    }
+                                },
+                                lot_price: None,
+                                price: None
+                            }),
+                            balance: None,
+                            status: None,
+                            comment: Some("Posting comment\nover two lines".to_owned()),
+                        },
+                        Posting {
+                            account: "TEST:ABC 123".to_owned(),
+                            reality: Reality::Real,
+                            amount: Some(PostingAmount {
+                                amount: Amount {
+                                    quantity: Decimal::new(120, 2),
+                                    commodity: Commodity {
+                                        name: "$".to_owned(),
+                                        position: CommodityPosition::Left
+                                    }
+                                },
+                                lot_price: None,
+                                price: None
+                            }),
+                            balance: None,
+                            status: None,
+                            comment: None,
+                        }
+                    ],
+                }
+            ))
+        );
+
+        assert_eq!(
+            parse_periodic_transaction(
+                r#"~ every 3 months 
+ TEST:ABC 123  $1.20 ; Posting comment
+                     ; over two lines
+ TEST:ABC 123  $1.20"#
+            ),
+            Ok((
+                "",
+                PeriodicTransaction {
+                    period: Period::EveryNMonths(3),
+                    comment: None,
+                    start_date: None,
+                    end_date: None,
+                    postings: vec![
+                        Posting {
+                            account: "TEST:ABC 123".to_owned(),
+                            reality: Reality::Real,
+                            amount: Some(PostingAmount {
+                                amount: Amount {
+                                    quantity: Decimal::new(120, 2),
+                                    commodity: Commodity {
+                                        name: "$".to_owned(),
+                                        position: CommodityPosition::Left
+                                    }
+                                },
+                                lot_price: None,
+                                price: None
+                            }),
+                            balance: None,
+                            status: None,
+                            comment: Some("Posting comment\nover two lines".to_owned()),
+                        },
+                        Posting {
+                            account: "TEST:ABC 123".to_owned(),
+                            reality: Reality::Real,
+                            amount: Some(PostingAmount {
+                                amount: Amount {
+                                    quantity: Decimal::new(120, 2),
+                                    commodity: Commodity {
+                                        name: "$".to_owned(),
+                                        position: CommodityPosition::Left
+                                    }
+                                },
+                                lot_price: None,
+                                price: None
+                            }),
+                            balance: None,
+                            status: None,
+                            comment: None,
+                        }
+                    ],
+                }
+            ))
+        );
+
+        assert_eq!(
+            parse_periodic_transaction(
+                r#"~ every 3 months from 2023-01-01 to 2023-02-01
+ TEST:ABC 123  $1.20 ; Posting comment
+                     ; over two lines
+ TEST:ABC 123  $1.20"#
+            ),
+            Ok((
+                "",
+                PeriodicTransaction {
+                    period: Period::EveryNMonths(3),
+                    comment: None,
+                    start_date: Some(NaiveDate::from_ymd(2023, 01, 01)),
+                    end_date: Some(NaiveDate::from_ymd(2023, 02, 01)),
+                    postings: vec![
+                        Posting {
+                            account: "TEST:ABC 123".to_owned(),
+                            reality: Reality::Real,
+                            amount: Some(PostingAmount {
+                                amount: Amount {
+                                    quantity: Decimal::new(120, 2),
+                                    commodity: Commodity {
+                                        name: "$".to_owned(),
+                                        position: CommodityPosition::Left
+                                    }
+                                },
+                                lot_price: None,
+                                price: None
+                            }),
+                            balance: None,
+                            status: None,
+                            comment: Some("Posting comment\nover two lines".to_owned()),
+                        },
+                        Posting {
+                            account: "TEST:ABC 123".to_owned(),
+                            reality: Reality::Real,
+                            amount: Some(PostingAmount {
+                                amount: Amount {
+                                    quantity: Decimal::new(120, 2),
+                                    commodity: Commodity {
+                                        name: "$".to_owned(),
+                                        position: CommodityPosition::Left
+                                    }
+                                },
+                                lot_price: None,
+                                price: None
+                            }),
+                            balance: None,
+                            status: None,
+                            comment: None,
+                        }
+                    ],
+                }
+            ))
+        );
+        assert_eq!(
+            parse_periodic_transaction(
+                r#"~ every 3 months from 2023-01-01 to 2023-02-01 ; Transaction comment
+ TEST:ABC 123  $1.20 ; Posting comment
+                     ; over two lines
+ TEST:ABC 123  $1.20"#
+            ),
+            Ok((
+                "",
+                PeriodicTransaction {
+                    period: Period::EveryNMonths(3),
+                    comment: Some("Transaction comment".to_owned()),
+                    start_date: Some(NaiveDate::from_ymd(2023, 01, 01)),
+                    end_date: Some(NaiveDate::from_ymd(2023, 02, 01)),
+                    postings: vec![
+                        Posting {
+                            account: "TEST:ABC 123".to_owned(),
+                            reality: Reality::Real,
+                            amount: Some(PostingAmount {
+                                amount: Amount {
+                                    quantity: Decimal::new(120, 2),
+                                    commodity: Commodity {
+                                        name: "$".to_owned(),
+                                        position: CommodityPosition::Left
+                                    }
+                                },
+                                lot_price: None,
+                                price: None
+                            }),
+                            balance: None,
+                            status: None,
+                            comment: Some("Posting comment\nover two lines".to_owned()),
+                        },
+                        Posting {
+                            account: "TEST:ABC 123".to_owned(),
+                            reality: Reality::Real,
+                            amount: Some(PostingAmount {
+                                amount: Amount {
+                                    quantity: Decimal::new(120, 2),
+                                    commodity: Commodity {
+                                        name: "$".to_owned(),
+                                        position: CommodityPosition::Left
+                                    }
+                                },
+                                lot_price: None,
+                                price: None
+                            }),
+                            balance: None,
+                            status: None,
+                            comment: None,
+                        }
+                    ],
+                }
+            ))
+        )
     }
 
     #[test]

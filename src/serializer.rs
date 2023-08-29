@@ -69,6 +69,7 @@ impl Serializer for LedgerItem {
                 write!(writer, "{}", settings.eol)?;
             }
             LedgerItem::Include(file) => write!(writer, "include {}{}", file, settings.eol)?,
+            LedgerItem::PeriodicTransaction(_) => todo!(),
         }
         Ok(())
     }
