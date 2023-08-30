@@ -69,8 +69,53 @@ impl Serializer for LedgerItem {
                 write!(writer, "{}", settings.eol)?;
             }
             LedgerItem::Include(file) => write!(writer, "include {}{}", file, settings.eol)?,
-            LedgerItem::PeriodicTransaction(_) => todo!(),
+            LedgerItem::PeriodicTransaction(periodic_transactions) => {
+                periodic_transactions.write(writer, settings)?;
+                write!(writer, "{}", settings.eol)?;
+            }
         }
+        Ok(())
+    }
+}
+
+impl Serializer for PeriodicTransaction {
+    fn write<W>(&self, writer: &mut W, settings: &SerializerSettings) -> Result<(), io::Error>
+    where
+        W: io::Write,
+    {
+        write!(writer, "{}", "~")?;
+
+        match self.period {
+            Period::Daily => write!(writer, " {}", "daily")?,
+            Period::Weekly => write!(writer, " {}", "weekly")?,
+            Period::Monthly => write!(writer, " {}", "monthly")?,
+            Period::Yearly => write!(writer, " {}", "yearly")?,
+            Period::EveryNDays(interval) => write!(writer, " {} {} days", "every ", interval)?,
+            Period::EveryNWeeks(interval) => write!(writer, " {} {} weeks", "every ", interval)?,
+            Period::EveryNMonths(interval) => write!(writer, " {} {} month", "every ", interval)?,
+            Period::EveryNYears(interval) => write!(writer, " {} {} year", "every ", interval)?,
+            Period::Date(date) => write!(writer, " {}", date.format("%Y-%m-%d"))?,
+        };
+
+        if let Some(ref start_date) = self.start_date {
+            write!(writer, " from {}", start_date.format("%Y-%m-%d"))?;
+        }
+
+        if let Some(ref end_date) = self.end_date {
+            write!(writer, " from {}", end_date.format("%Y-%m-%d"))?;
+        }
+
+        if let Some(ref comment) = self.comment {
+            for comment in comment.split('\n') {
+                write!(writer, "{}{}; {}", settings.eol, settings.indent, comment)?;
+            }
+        }
+
+        for posting in &self.postings {
+            write!(writer, "{}{}", settings.eol, settings.indent)?;
+            posting.write(writer, settings)?;
+        }
+
         Ok(())
     }
 }
