@@ -1101,14 +1101,8 @@ mod tests {
             Ok(("", Period::EveryNMonths(1)))
         );
         assert_eq!(parse_period("every year"), Ok(("", Period::EveryNYears(1))));
-        assert_eq!(
-            parse_period("biweekly"),
-            Ok(("", Period::EveryNWeeks(2)))
-        );
-        assert_eq!(
-            parse_period("bimonthly"),
-            Ok(("", Period::EveryNMonths(2)))
-        );
+        assert_eq!(parse_period("biweekly"), Ok(("", Period::EveryNWeeks(2))));
+        assert_eq!(parse_period("bimonthly"), Ok(("", Period::EveryNMonths(2))));
         assert_eq!(
             parse_period("every 3 days"),
             Ok(("", Period::EveryNDays(3)))
